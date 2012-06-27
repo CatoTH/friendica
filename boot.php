@@ -4,14 +4,15 @@ require_once('include/config.php');
 require_once('include/network.php');
 require_once('include/plugin.php');
 require_once('include/text.php');
+require_once('include/datetime.php');
 require_once('include/pgettext.php');
 require_once('include/nav.php');
 require_once('include/cache.php');
 
 define ( 'FRIENDICA_PLATFORM',     'Friendica');
-define ( 'FRIENDICA_VERSION',      '3.0.1361' );
+define ( 'FRIENDICA_VERSION',      '3.0.1386' );
 define ( 'DFRN_PROTOCOL_VERSION',  '2.23'    );
-define ( 'DB_UPDATE_VERSION',      1145      );
+define ( 'DB_UPDATE_VERSION',      1151      );
 
 define ( 'EOL',                    "<br />\r\n"     );
 define ( 'ATOM_TIME',              'Y-m-d\TH:i:s\Z' );
@@ -28,6 +29,11 @@ define ( 'ATOM_TIME',              'Y-m-d\TH:i:s\Z' );
  */
 
 define ( 'JPEG_QUALITY',            100  );
+/**
+ * $a->config['system']['png_quality'] from 0 (uncompressed) to 9
+ */
+define ( 'PNG_QUALITY',             8  );
+
 
 /**
  * Not yet used
@@ -70,14 +76,6 @@ define ( 'CONTACT_IS_FOLLOWER', 1);
 define ( 'CONTACT_IS_SHARING',  2);
 define ( 'CONTACT_IS_FRIEND',   3);
 
-
-/**
- * Hook array order
- */
-
-define ( 'HOOK_HOOK',      0);
-define ( 'HOOK_FILE',      1);
-define ( 'HOOK_FUNCTION',  2);
 
 /**
  * DB update return values
@@ -326,7 +324,16 @@ if(! class_exists('App')) {
 		private $curl_code;
 		private $curl_headers;
 
+		private $cached_profile_image;
+		private $cached_profile_picdate;
+							
 		function __construct() {
+
+			global $default_timezone;
+
+			$this->timezone = ((x($default_timezone)) ? $default_timezone : 'UTC');
+
+			date_default_timezone_set($this->timezone);
 
 			$this->config = array();
 			$this->page = array();
@@ -402,9 +409,6 @@ if(! class_exists('App')) {
 			$this->argc = count($this->argv);
 			if((array_key_exists('0',$this->argv)) && strlen($this->argv[0])) {
 				$this->module = str_replace(".", "_", $this->argv[0]);
-				if(array_key_exists('2',$this->argv)) {
-					$this->category = $this->argv[2];
-				}
 			}
 			else {
 				$this->argc = 1;
@@ -427,7 +431,7 @@ if(! class_exists('App')) {
 			 * pagination
 			 */
 
-			$this->pager['page'] = ((x($_GET,'page')) ? $_GET['page'] : 1);
+			$this->pager['page'] = ((x($_GET,'page') && intval($_GET['page']) > 0) ? intval($_GET['page']) : 1);
 			$this->pager['itemspage'] = 50;
 			$this->pager['start'] = ($this->pager['page'] * $this->pager['itemspage']) - $this->pager['itemspage'];
 			$this->pager['total'] = 0;
@@ -494,7 +498,7 @@ if(! class_exists('App')) {
 		}
 
 		function set_pager_itemspage($n) {
-			$this->pager['itemspage'] = intval($n);
+			$this->pager['itemspage'] = ((intval($n) > 0) ? intval($n) : 0);
 			$this->pager['start'] = ($this->pager['page'] * $this->pager['itemspage']) - $this->pager['itemspage'];
 
 		}
@@ -532,6 +536,28 @@ if(! class_exists('App')) {
 
 		function get_curl_headers() {
 			return $this->curl_headers;
+		}
+
+		function get_cached_avatar_image($avatar_image){
+			if($this->cached_profile_image[$avatar_image])
+				return $this->cached_profile_image[$avatar_image];
+
+			$path_parts = explode("/",$avatar_image);
+			$common_filename = $path_parts[count($path_parts)-1];
+
+			if($this->cached_profile_picdate[$common_filename]){
+				$this->cached_profile_image[$avatar_image] = $avatar_image . $this->cached_profile_picdate[$common_filename];
+			} else {
+				$r = q("SELECT `contact`.`avatar-date` AS picdate FROM `contact` WHERE `contact`.`thumb` like \"%%/%s\"",
+					$common_filename);
+				if(! count($r)){
+					$this->cached_profile_image[$avatar_image] = $avatar_image;
+				} else {
+					$this->cached_profile_picdate[$common_filename] = "?rev=" . urlencode($r[0]['picdate']);
+  					$this->cached_profile_image[$avatar_image] = $avatar_image . $this->cached_profile_picdate[$common_filename];
+				}
+			}
+			return $this->cached_profile_image[$avatar_image];
 		}
 
 
@@ -1121,9 +1147,9 @@ if(! function_exists('profile_sidebar')) {
 			'fullname' => $profile['name'],
 			'firstname' => $firstname,
 			'lastname' => $lastname,
-			'photo300' => $a->get_baseurl() . '/photo/custom/300/' . $profile['uid'] . '.jpg',
-			'photo100' => $a->get_baseurl() . '/photo/custom/100/' . $profile['uid'] . '.jpg',
-			'photo50' => $a->get_baseurl() . '/photo/custom/50/'  . $profile['uid'] . '.jpg',
+			'photo300' => $a->get_cached_avatar_image($a->get_baseurl() . '/photo/custom/300/' . $profile['uid'] . '.jpg'),
+			'photo100' => $a->get_cached_avatar_image($a->get_baseurl() . '/photo/custom/100/' . $profile['uid'] . '.jpg'),
+			'photo50' => $a->get_cached_avatar_image($a->get_baseurl() . '/photo/custom/50/'  . $profile['uid'] . '.jpg'),
 		);
 
 		if (!$block){
@@ -1226,6 +1252,9 @@ if(! function_exists('get_birthdays')) {
 			'$event_reminders' => t('Birthday Reminders'),
 			'$event_title' => t('Birthdays this week:'),
 			'$events' => $r,
+			'$lbr' => '{',  // raw brackets mess up if/endif macro processing
+			'$rbr' => '}'
+
 		));
 	}
 }
@@ -1348,9 +1377,9 @@ if(! function_exists('proc_run')) {
 
 		if(count($args) && $args[0] === 'php')
 			$args[0] = ((x($a->config,'php_path')) && (strlen($a->config['php_path'])) ? $a->config['php_path'] : 'php');
-		foreach ($args as $arg){
-			$arg = escapeshellarg($arg);
-		}
+		for($x = 0; $x < count($args); $x ++)
+			$args[$x] = escapeshellarg($args[$x]);
+
 		$cmdline = implode($args," ");
 		proc_close(proc_open($cmdline." &",array(),$foo));
 	}
@@ -1358,7 +1387,7 @@ if(! function_exists('proc_run')) {
 
 if(! function_exists('current_theme')) {
 	function current_theme(){
-		$app_base_themes = array('duepuntozero', 'loozah');
+		$app_base_themes = array('duepuntozero', 'dispy', 'quattro');
 	
 		$a = get_app();
 	
@@ -1376,7 +1405,7 @@ if(! function_exists('current_theme')) {
 				return($t);
 		}
 	
-		$fallback = glob('view/theme/*/style.[css|php]');
+		$fallback = array_merge(glob('view/theme/*/style.css'),glob('view/theme/*/style.php'));
 		if(count($fallback))
 			return (str_replace('view/theme/','', substr($fallback[0],0,-10)));
 	
@@ -1567,4 +1596,31 @@ function zrl($s,$force = false) {
 	if($mine and ! link_compare($mine,$s))
 		return $s . $achar . 'zrl=' . urlencode($mine);
 	return $s;
+}
+
+/**
+* returns querystring as string from a mapped array
+*
+* @param params Array 
+* @return string
+*/
+function build_querystring($params, $name=null) { 
+    $ret = ""; 
+    foreach($params as $key=>$val) {
+        if(is_array($val)) { 
+            if($name==null) {
+                $ret .= build_querystring($val, $key); 
+            } else {
+                $ret .= build_querystring($val, $name."[$key]");    
+            }
+        } else {
+            $val = urlencode($val);
+            if($name!=null) {
+                $ret.=$name."[$key]"."=$val&"; 
+            } else {
+                $ret.= "$key=$val&"; 
+            }
+        } 
+    } 
+    return $ret;    
 }

@@ -87,7 +87,7 @@ function datetime_convert($from = 'UTC', $to = 'UTC', $s = 'now', $fmt = "Y-m-d 
 		$from = 'UTC';
 	if($to === '')
 		$to = 'UTC';
-	if($s === '')
+	if( ($s === '') || (! is_string($s)) )
 		$s = 'now';
 
 	// Slight hackish adjustment so that 'zero' datetime actually returns what is intended
@@ -244,7 +244,7 @@ function timesel($pre,$h,$m) {
 // Limited to range of timestamps
 
 if(! function_exists('relative_date')) {
-function relative_date($posted_date) {
+function relative_date($posted_date,$format = null) {
 
 	$localtime = datetime_convert('UTC',date_default_timezone_get(),$posted_date); 
 
@@ -274,7 +274,9 @@ function relative_date($posted_date) {
 		if ($d >= 1) {
 			$r = round($d);
 			// translators - e.g. 22 hours ago, 1 minute ago
-			return sprintf( t('%1$d %2$s ago'),$r, (($r == 1) ? $str[0] : $str[1]));
+			if(! $format)
+				$format = t('%1$d %2$s ago');
+			return sprintf( $format,$r, (($r == 1) ? $str[0] : $str[1]));
         }
     }
 }}
@@ -445,11 +447,13 @@ function update_contact_birthdays() {
 			 *
 			 */
 			 
-			$bdtext = t('Birthday:') . ' [url=' . $rr['url'] . ']' . $rr['name'] . '[/url]' ;
+			$bdtext = sprintf( t('%s\'s birthday'), $rr['name']);
+			$bdtext2 = sprintf( t('Happy Birthday %s'), ' [url=' . $rr['url'] . ']' . $rr['name'] . '[/url]') ;
 
 
-			$r = q("INSERT INTO `event` (`uid`,`cid`,`created`,`edited`,`start`,`finish`,`desc`,`type`,`adjust`)
-				VALUES ( %d, %d, '%s', '%s', '%s', '%s', '%s', '%s', '%d' ) ",
+
+			$r = q("INSERT INTO `event` (`uid`,`cid`,`created`,`edited`,`start`,`finish`,`summary`,`desc`,`type`,`adjust`)
+				VALUES ( %d, %d, '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d' ) ",
 				intval($rr['uid']),
 			 	intval($rr['id']),
 				dbesc(datetime_convert()),
@@ -457,6 +461,7 @@ function update_contact_birthdays() {
 				dbesc(datetime_convert('UTC','UTC', $nextbd)),
 				dbesc(datetime_convert('UTC','UTC', $nextbd . ' + 1 day ')),
 				dbesc($bdtext),
+				dbesc($bdtext2),
 				dbesc('birthday'),
 				intval(0)
 			);

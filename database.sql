@@ -254,6 +254,7 @@ CREATE TABLE IF NOT EXISTS `event` (
   `edited` datetime NOT NULL,
   `start` datetime NOT NULL,
   `finish` datetime NOT NULL,
+  `summary` text NOT NULL,
   `desc` text NOT NULL,
   `location` text NOT NULL,
   `type` char(255) NOT NULL,
@@ -263,7 +264,14 @@ CREATE TABLE IF NOT EXISTS `event` (
   `allow_gid` mediumtext NOT NULL,
   `deny_cid` mediumtext NOT NULL,
   `deny_gid` mediumtext NOT NULL,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  KEY `uid` ( `uid` ),
+  KEY `cid` ( `cid` ),
+  KEY `uri` ( `uri` ),
+  KEY `type` ( `type` ),
+  KEY `start` ( `start` ),
+  KEY `finish` ( `finish` ),
+  KEY `adjust` ( `adjust` )
 ) ENGINE=MyISAM  DEFAULT CHARSET=utf8;
 
 -- --------------------------------------------------------
@@ -745,6 +753,7 @@ CREATE TABLE IF NOT EXISTS `photo` (
   `desc` text NOT NULL,
   `album` char(255) NOT NULL,
   `filename` char(255) NOT NULL,
+  `type` CHAR(128) NOT NULL DEFAULT 'image/jpeg',
   `height` smallint(6) NOT NULL,
   `width` smallint(6) NOT NULL,
   `data` mediumblob NOT NULL,
@@ -820,14 +829,18 @@ CREATE TABLE IF NOT EXISTS `profile` (
   `region` char(255) NOT NULL,
   `postal-code` char(32) NOT NULL,
   `country-name` char(255) NOT NULL,
+  `hometown` char(255) NOT NULL,
   `gender` char(32) NOT NULL,
   `marital` char(255) NOT NULL,
   `with` text NOT NULL,
+  `howlong` datetime NOT NULL default '0000-00-00 00:00:00',
   `sexual` char(255) NOT NULL,
   `politic` char(255) NOT NULL,
   `religion` char(255) NOT NULL,
   `pub_keywords` text NOT NULL,
   `prv_keywords` text NOT NULL,
+  `likes` text NOT NULL,
+  `dislikes` text NOT NULL,
   `about` text NOT NULL,
   `summary` char(255) NOT NULL,
   `music` text NOT NULL,
@@ -942,12 +955,14 @@ CREATE TABLE IF NOT EXISTS `session` (
 
 CREATE TABLE IF NOT EXISTS `sign` (
   `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
-  `iid` int(10) unsigned NOT NULL,
+  `iid` int(10) unsigned NOT NULL DEFAULT '0',
+  `retract_iid` int(10) unsigned NOT NULL DEFAULT '0',
   `signed_text` mediumtext NOT NULL,
   `signature` text NOT NULL,
   `signer` char(255) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `iid` (`iid`)
+  KEY `iid` (`iid`),
+  KEY `retract_iid` (`retract_iid`)
 ) ENGINE=MyISAM  DEFAULT CHARSET=utf8;
 
 -- --------------------------------------------------------

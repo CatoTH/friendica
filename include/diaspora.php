@@ -83,6 +83,9 @@ function diaspora_dispatch($importer,$msg) {
 	elseif($xmlbase->signed_retraction) {
 		$ret = diaspora_signed_retraction($importer,$xmlbase->signed_retraction,$msg);
 	}
+	elseif($xmlbase->relayable_retraction) {
+		$ret = diaspora_signed_retraction($importer,$xmlbase->relayable_retraction,$msg);
+	}
 	elseif($xmlbase->photo) {
 		$ret = diaspora_photo($importer,$xmlbase->photo,$msg);
 	}
@@ -677,7 +680,7 @@ function diaspora_post($importer,$xml) {
 		return;
 	}
 
-    // allocate a guid on our system - we aren't fixing any collisions.
+	// allocate a guid on our system - we aren't fixing any collisions.
 	// we're ignoring them
 
 	$g = q("select * from guid where guid = '%s' limit 1",
@@ -844,7 +847,7 @@ function diaspora_reshare($importer,$xml) {
 	$prefix = '&#x2672; ' . $details . "\n"; 
 
 
-    // allocate a guid on our system - we aren't fixing any collisions.
+	// allocate a guid on our system - we aren't fixing any collisions.
 	// we're ignoring them
 
 	$g = q("select * from guid where guid = '%s' limit 1",
@@ -948,7 +951,7 @@ function diaspora_asphoto($importer,$xml) {
 		return;
 	}
 
-    // allocate a guid on our system - we aren't fixing any collisions.
+	// allocate a guid on our system - we aren't fixing any collisions.
 	// we're ignoring them
 
 	$g = q("select * from guid where guid = '%s' limit 1",
@@ -1057,44 +1060,63 @@ function diaspora_comment($importer,$xml,$msg) {
 	}
 	$parent_item = $r[0];
 
-	$author_signed_data = $guid . ';' . $parent_guid . ';' . $text . ';' . $diaspora_handle;
 
-	$author_signature = base64_decode($author_signature);
+	/* How Diaspora performs comment signature checking:
 
-	if(strcasecmp($diaspora_handle,$msg['author']) == 0) {
-		$person = $contact;
-		$key = $msg['key'];
-	}
-	else {
-		$person = find_diaspora_person_by_handle($diaspora_handle);	
+	   - If an item has been sent by the comment author to the top-level post owner to relay on
+	     to the rest of the contacts on the top-level post, the top-level post owner should check
+	     the author_signature, then create a parent_author_signature before relaying the comment on
+	   - If an item has been relayed on by the top-level post owner, the contacts who receive it
+	     check only the parent_author_signature. Basically, they trust that the top-level post
+	     owner has already verified the authenticity of anything he/she sends out
+	   - In either case, the signature that get checked is the signature created by the person
+	     who sent the salmon
+	*/
 
-		if(is_array($person) && x($person,'pubkey'))
-			$key = $person['pubkey'];
-		else {
-			logger('diaspora_comment: unable to find author details');
-			return;
-		}
-	}
-
-	if(! rsa_verify($author_signed_data,$author_signature,$key,'sha256')) {
-		logger('diaspora_comment: verification failed.');
-		return;
-	}
+	$signed_data = $guid . ';' . $parent_guid . ';' . $text . ';' . $diaspora_handle;
+	$key = $msg['key'];
 
 	if($parent_author_signature) {
-		$owner_signed_data = $guid . ';' . $parent_guid . ';' . $text . ';' . $diaspora_handle;
+		// If a parent_author_signature exists, then we've received the comment
+		// relayed from the top-level post owner. There's no need to check the
+		// author_signature if the parent_author_signature is valid
 
 		$parent_author_signature = base64_decode($parent_author_signature);
 
-		$key = $msg['key'];
+		if(! rsa_verify($signed_data,$parent_author_signature,$key,'sha256')) {
+			logger('diaspora_comment: top-level owner verification failed.');
+			return;
+		}
+	}
+	else {
+		// If there's no parent_author_signature, then we've received the comment
+		// from the comment creator. In that case, the person is commenting on
+		// our post, so he/she must be a contact of ours and his/her public key
+		// should be in $msg['key']
 
-		if(! rsa_verify($owner_signed_data,$parent_author_signature,$key,'sha256')) {
-			logger('diaspora_comment: owner verification failed.');
+		$author_signature = base64_decode($author_signature);
+
+		if(! rsa_verify($signed_data,$author_signature,$key,'sha256')) {
+			logger('diaspora_comment: comment author verification failed.');
 			return;
 		}
 	}
 
 	// Phew! Everything checks out. Now create an item.
+
+	// Find the original comment author information.
+	// We need this to make sure we display the comment author
+	// information (name and avatar) correctly.
+	if(strcasecmp($diaspora_handle,$msg['author']) == 0)
+		$person = $contact;
+	else {
+		$person = find_diaspora_person_by_handle($diaspora_handle);	
+
+		if(! is_array($person)) {
+			logger('diaspora_comment: unable to find author details');
+			return;
+		}
+	}
 
 	$body = diaspora2bb($text);
 
@@ -1538,7 +1560,8 @@ function diaspora_photo($importer,$xml,$msg) {
 
 	$link_text = '[img]' . $remote_photo_path . $remote_photo_name . '[/img]' . "\n";
 
-	$link_text = scale_external_images($link_text);
+	$link_text = scale_external_images($link_text, true,
+	                                   array($remote_photo_name, 'scaled_full_' . $remote_photo_name));
 
 	if(strpos($parent_item['body'],$link_text) === false) {
 		$r = q("update item set `body` = '%s', `visible` = 1 where `id` = %d and `uid` = %d limit 1",
@@ -1602,59 +1625,84 @@ function diaspora_like($importer,$xml,$msg) {
 			logger('diaspora_like: duplicate like: ' . $guid);
 			return;
 		} 
+		// Note: I don't think "Like" objects with positive = "false" are ever actually used
+		// It looks like "RelayableRetractions" are used for "unlike" instead
 		if($positive === 'false') {
-			q("UPDATE `item` SET `deleted` = 1 WHERE `id` = %d AND `uid` = %d LIMIT 1",
+			logger('diaspora_like: received a like with positive set to "false"...ignoring');
+/*			q("UPDATE `item` SET `deleted` = 1 WHERE `id` = %d AND `uid` = %d LIMIT 1",
 				intval($r[0]['id']),
 				intval($importer['uid'])
-			);
-			// FIXME
+			);*/
+			// FIXME--actually don't unless it turns out that Diaspora does indeed send out "false" likes
 			//  send notification via proc_run()
 			return;
 		}
 	}
+	// Note: I don't think "Like" objects with positive = "false" are ever actually used
+	// It looks like "RelayableRetractions" are used for "unlike" instead
 	if($positive === 'false') {
-		logger('diaspora_like: unlike received with no corresponding like');
+		logger('diaspora_like: received a like with positive set to "false"');
+		logger('diaspora_like: unlike received with no corresponding like...ignoring');
 		return;	
 	}
 
-	$author_signed_data = $guid . ';' . $target_type . ';' . $parent_guid . ';' . $positive . ';' . $diaspora_handle;
 
-	$author_signature = base64_decode($author_signature);
+	/* How Diaspora performs "like" signature checking:
 
-	if(strcasecmp($diaspora_handle,$msg['author']) == 0) {
-		$person = $contact;
-		$key = $msg['key'];
-	}
-	else {
-		$person = find_diaspora_person_by_handle($diaspora_handle);	
-		if(is_array($person) && x($person,'pubkey'))
-			$key = $person['pubkey'];
-		else {
-			logger('diaspora_like: unable to find author details');
-			return;
-		}
-	}
+	   - If an item has been sent by the like author to the top-level post owner to relay on
+	     to the rest of the contacts on the top-level post, the top-level post owner should check
+	     the author_signature, then create a parent_author_signature before relaying the like on
+	   - If an item has been relayed on by the top-level post owner, the contacts who receive it
+	     check only the parent_author_signature. Basically, they trust that the top-level post
+	     owner has already verified the authenticity of anything he/she sends out
+	   - In either case, the signature that get checked is the signature created by the person
+	     who sent the salmon
+	*/
 
-	if(! rsa_verify($author_signed_data,$author_signature,$key,'sha256')) {
-		logger('diaspora_like: verification failed.');
-		return;
-	}
+	$signed_data = $guid . ';' . $target_type . ';' . $parent_guid . ';' . $positive . ';' . $diaspora_handle;
+	$key = $msg['key'];
 
 	if($parent_author_signature) {
-
-		$owner_signed_data = $guid . ';' . $target_type . ';' . $parent_guid . ';' . $positive . ';' . $diaspora_handle;
+		// If a parent_author_signature exists, then we've received the like
+		// relayed from the top-level post owner. There's no need to check the
+		// author_signature if the parent_author_signature is valid
 
 		$parent_author_signature = base64_decode($parent_author_signature);
 
-		$key = $msg['key'];
+		if(! rsa_verify($signed_data,$parent_author_signature,$key,'sha256')) {
+			logger('diaspora_like: top-level owner verification failed.');
+			return;
+		}
+	}
+	else {
+		// If there's no parent_author_signature, then we've received the like
+		// from the like creator. In that case, the person is "like"ing
+		// our post, so he/she must be a contact of ours and his/her public key
+		// should be in $msg['key']
 
-		if(! rsa_verify($owner_signed_data,$parent_author_signature,$key,'sha256')) {
-			logger('diaspora_like: owner verification failed.');
+		$author_signature = base64_decode($author_signature);
+
+		if(! rsa_verify($signed_data,$author_signature,$key,'sha256')) {
+			logger('diaspora_like: like creator verification failed.');
 			return;
 		}
 	}
 
 	// Phew! Everything checks out. Now create an item.
+
+	// Find the original comment author information.
+	// We need this to make sure we display the comment author
+	// information (name and avatar) correctly.
+	if(strcasecmp($diaspora_handle,$msg['author']) == 0)
+		$person = $contact;
+	else {
+		$person = find_diaspora_person_by_handle($diaspora_handle);
+
+		if(! is_array($person)) {
+			logger('diaspora_like: unable to find author details');
+			return;
+		}
+	}
 
 	$uri = $diaspora_handle . ':' . $guid;
 
@@ -1783,38 +1831,88 @@ function diaspora_signed_retraction($importer,$xml,$msg) {
 	$type = notags(unxmlify($xml->target_type));
 	$sig = notags(unxmlify($xml->target_author_signature));
 
+	$parent_author_signature = (($xml->parent_author_signature) ? notags(unxmlify($xml->parent_author_signature)) : '');
+
 	$contact = diaspora_get_contact_by_handle($importer['uid'],$diaspora_handle);
 	if(! $contact) {
 		logger('diaspora_signed_retraction: no contact');
 		return;
 	}
 
-	// this may not yet work for comments. Need to see how the relaying works
-	// and figure out who signs it.
-
 
 	$signed_data = $guid . ';' . $type ;
-
-	$sig = base64_decode($sig);
-
 	$key = $msg['key'];
 
-	if(! rsa_verify($signed_data,$sig,$key,'sha256')) {
-		logger('diaspora_signed_retraction: owner verification failed.' . print_r($msg,true));
-		return;
+	/* How Diaspora performs relayable_retraction signature checking:
+
+	   - If an item has been sent by the item author to the top-level post owner to relay on
+	     to the rest of the contacts on the top-level post, the top-level post owner checks
+	     the author_signature, then creates a parent_author_signature before relaying the item on
+	   - If an item has been relayed on by the top-level post owner, the contacts who receive it
+	     check only the parent_author_signature. Basically, they trust that the top-level post
+	     owner has already verified the authenticity of anything he/she sends out
+	   - In either case, the signature that get checked is the signature created by the person
+	     who sent the salmon
+	*/
+
+	if($parent_author_signature) {
+
+		$parent_author_signature = base64_decode($parent_author_signature);
+
+		if(! rsa_verify($signed_data,$parent_author_signature,$key,'sha256')) {
+			logger('diaspora_signed_retraction: top-level post owner verification failed');
+			return;
+		}
+
+	}
+	else {
+
+		$sig_decode = base64_decode($sig);
+
+		if(! rsa_verify($signed_data,$sig_decode,$key,'sha256')) {
+			logger('diaspora_signed_retraction: retraction owner verification failed.' . print_r($msg,true));
+			return;
+		}
 	}
 
-	if($type === 'StatusMessage') {
+	if($type === 'StatusMessage' || $type === 'Comment' || $type === 'Like') {
 		$r = q("select * from item where guid = '%s' and uid = %d and not file like '%%[%%' limit 1",
 			dbesc($guid),
 			intval($importer['uid'])
 		);
 		if(count($r)) {
 			if(link_compare($r[0]['author-link'],$contact['url'])) {
-				q("update item set `deleted` = 1, `changed` = '%s' where `id` = %d limit 1",
+				q("update item set `deleted` = 1, `edited` = '%s', `changed` = '%s', `body` = '' , `title` = '' where `id` = %d limit 1",
+					dbesc(datetime_convert()),			
 					dbesc(datetime_convert()),			
 					intval($r[0]['id'])
 				);
+	
+				// Now check if the retraction needs to be relayed by us
+				//
+				// The first item in the `item` table with the parent id is the parent. However, MySQL doesn't always
+				// return the items ordered by `item`.`id`, in which case the wrong item is chosen as the parent.
+				// The only item with `parent` and `id` as the parent id is the parent item.
+				$p = q("select origin from item where parent = %d and id = %d limit 1",
+					$r[0]['parent'],
+					$r[0]['parent']
+				);
+				if(count($p)) {
+					if(($p[0]['origin']) && (! $parent_author_signature)) {
+						q("insert into sign (`retract_iid`,`signed_text`,`signature`,`signer`) values (%d,'%s','%s','%s') ",
+							$r[0]['id'],
+							dbesc($signed_data),
+							dbesc($sig),
+							dbesc($diaspora_handle)
+						);
+
+						// the existence of parent_author_signature would have meant the parent_author or owner
+						// is already relaying.
+						logger('diaspora_signed_retraction: relaying relayable_retraction');
+
+						proc_run('php','include/notifier.php','relayable_retraction',$r[0]['id']);
+					}
+				}
 			}
 		}
 	}
@@ -1908,6 +2006,7 @@ function diaspora_share($me,$contact) {
 	));
 
 	$slap = 'xml=' . urlencode(urlencode(diaspora_msg_build($msg,$me,$contact,$me['prvkey'],$contact['pubkey'])));
+	//$slap = 'xml=' . urlencode(diaspora_msg_build($msg,$me,$contact,$me['prvkey'],$contact['pubkey']));
 
 	return(diaspora_transmit($owner,$contact,$slap, false));
 }
@@ -1925,6 +2024,7 @@ function diaspora_unshare($me,$contact) {
 	));
 
 	$slap = 'xml=' . urlencode(urlencode(diaspora_msg_build($msg,$me,$contact,$me['prvkey'],$contact['pubkey'])));
+	//$slap = 'xml=' . urlencode(diaspora_msg_build($msg,$me,$contact,$me['prvkey'],$contact['pubkey']));
 
 	return(diaspora_transmit($owner,$contact,$slap, false));
 
@@ -1963,13 +2063,21 @@ function diaspora_send_status($item,$owner,$contact,$public_batch = false) {
 			$images[] = $detail;
 			$body = str_replace($detail['str'],$mtch[1],$body);
 		}
-	}	
+	}
 */
+	// Removal of tags
+	$body = preg_replace('/#\[url\=(\w+.*?)\](\w+.*?)\[\/url\]/i', '#$2', $body);
+
+	//if(strlen($title))
+	//	$body = "[b]".html_entity_decode($title)."[/b]\n\n".$body;
+
+	// convert to markdown
 	$body = xmlify(html_entity_decode(bb2diaspora($body)));
+	//$body = bb2diaspora($body);
 
+	// Adding the title
 	if(strlen($title))
-		$body = xmlify('**' . html_entity_decode($title) . '**' . "\n") . $body;
-
+		$body = "## ".html_entity_decode($title)."\n\n".$body;
 
 	if($item['attach']) {
 		$cnt = preg_match_all('/href=\"(.*?)\"(.*?)title=\"(.*?)\"/ism',$item['attach'],$matches,PREG_SET_ORDER);
@@ -1999,6 +2107,7 @@ function diaspora_send_status($item,$owner,$contact,$public_batch = false) {
 	logger('diaspora_send_status: ' . $owner['username'] . ' -> ' . $contact['name'] . ' base message: ' . $msg, LOGGER_DATA);
 
 	$slap = 'xml=' . urlencode(urlencode(diaspora_msg_build($msg,$owner,$contact,$owner['uprvkey'],$contact['pubkey'],$public_batch)));
+	//$slap = 'xml=' . urlencode(diaspora_msg_build($msg,$owner,$contact,$owner['uprvkey'],$contact['pubkey'],$public_batch));
 
 	$return_code = diaspora_transmit($owner,$contact,$slap,$public_batch);
 
@@ -2043,6 +2152,7 @@ function diaspora_send_images($item,$owner,$contact,$images,$public_batch = fals
 
 		logger('diaspora_send_photo: base message: ' . $msg, LOGGER_DATA);
 		$slap = 'xml=' . urlencode(urlencode(diaspora_msg_build($msg,$owner,$contact,$owner['uprvkey'],$contact['pubkey'],$public_batch)));
+		//$slap = 'xml=' . urlencode(diaspora_msg_build($msg,$owner,$contact,$owner['uprvkey'],$contact['pubkey'],$public_batch));
 
 		diaspora_transmit($owner,$contact,$slap,$public_batch);
 	}
@@ -2053,7 +2163,7 @@ function diaspora_send_followup($item,$owner,$contact,$public_batch = false) {
 
 	$a = get_app();
 	$myaddr = $owner['nickname'] . '@' .  substr($a->get_baseurl(), strpos($a->get_baseurl(),'://') + 3);
-	$theiraddr = $contact['addr'];
+//	$theiraddr = $contact['addr'];
 
 	// The first item in the `item` table with the parent id is the parent. However, MySQL doesn't always
 	// return the items ordered by `item`.`id`, in which case the wrong item is chosen as the parent.
@@ -2071,7 +2181,11 @@ function diaspora_send_followup($item,$owner,$contact,$public_batch = false) {
 		$tpl = get_markup_template('diaspora_like.tpl');
 		$like = true;
 		$target_type = 'Post';
-		$positive = (($item['deleted']) ? 'false' : 'true');
+//		$positive = (($item['deleted']) ? 'false' : 'true');
+		$positive = 'true';
+
+		if(($item['deleted']))
+			logger('diaspora_send_followup: received deleted "like". Those should go to diaspora_send_retraction');
 	}
 	else {
 		$tpl = get_markup_template('diaspora_comment.tpl');
@@ -2102,6 +2216,7 @@ function diaspora_send_followup($item,$owner,$contact,$public_batch = false) {
 	logger('diaspora_followup: base message: ' . $msg, LOGGER_DATA);
 
 	$slap = 'xml=' . urlencode(urlencode(diaspora_msg_build($msg,$owner,$contact,$owner['uprvkey'],$contact['pubkey'],$public_batch)));
+	//$slap = 'xml=' . urlencode(diaspora_msg_build($msg,$owner,$contact,$owner['uprvkey'],$contact['pubkey'],$public_batch));
 
 	return(diaspora_transmit($owner,$contact,$slap,$public_batch));
 }
@@ -2111,8 +2226,11 @@ function diaspora_send_relay($item,$owner,$contact,$public_batch = false) {
 
 
 	$a = get_app();
-	$myaddr = $owner['nickname'] . '@' .  substr($a->get_baseurl(), strpos($a->get_baseurl(),'://') + 3);
-	$theiraddr = $contact['addr'];
+	$myaddr = $owner['nickname'] . '@' . substr($a->get_baseurl(), strpos($a->get_baseurl(),'://') + 3);
+//	$theiraddr = $contact['addr'];
+
+	$body = $item['body'];
+	$text = html_entity_decode(bb2diaspora($body));
 
 
 	// The first item in the `item` table with the parent id is the parent. However, MySQL doesn't always
@@ -2127,29 +2245,35 @@ function diaspora_send_relay($item,$owner,$contact,$public_batch = false) {
 	else
 		return;
 
-	if($item['verb'] === ACTIVITY_LIKE) {
-		$tpl = get_markup_template('diaspora_like_relay.tpl');
+	$like = false;
+	$relay_retract = false;
+	$sql_sign_id = 'iid';
+	if( $item['deleted']) {
+		$relay_retract = true;
+
+		$target_type = ( ($item['verb'] === ACTIVITY_LIKE) ? 'Like' : 'Comment');
+
+		$sql_sign_id = 'retract_iid';
+		$tpl = get_markup_template('diaspora_relayable_retraction.tpl');
+	}
+	elseif($item['verb'] === ACTIVITY_LIKE) {
 		$like = true;
+
 		$target_type = 'Post';
-		$positive = (($item['deleted']) ? 'false' : 'true');
+//		$positive = (($item['deleted']) ? 'false' : 'true');
+		$positive = 'true';
+
+		$tpl = get_markup_template('diaspora_like_relay.tpl');
 	}
-	else {
+	else { // item is a comment
 		$tpl = get_markup_template('diaspora_comment_relay.tpl');
-		$like = false;
 	}
 
-	$body = $item['body'];
 
-	$text = html_entity_decode(bb2diaspora($body));
+	// fetch the original signature	if the relayable was created by a Diaspora
+	// or DFRN user. Relayables for other networks are not supported.
 
-	// fetch the original signature	if somebody sent the post to us to relay
-	// If we are relaying for a reply originating on our own account, there wasn't a 'send to relay'
-	// action. It wasn't needed. In that case create the original signature and the 
-	// owner (parent author) signature
-	// comments from other networks will be relayed under our name, with a brief 
-	// preamble to describe what's happening and noting the real author
-
-	$r = q("select * from sign where iid = %d limit 1",
+	$r = q("select * from sign where " . $sql_sign_id . " = %d limit 1",
 		intval($item['id'])
 	);
 	if(count($r)) { 
@@ -2160,54 +2284,49 @@ function diaspora_send_relay($item,$owner,$contact,$public_batch = false) {
 	}
 	else {
 
-		$itemcontact = q("select * from contact where `id` = %d limit 1",
-			intval($item['contact-id'])
-		);
-		if(count($itemcontact)) {
-			if(! $itemcontact[0]['self']) {
-				$prefix = sprintf( t('[Relayed] Comment authored by %s from network %s'),
-					'['. $item['author-name'] . ']' . '(' . $item['author-link'] . ')',  
-					network_to_name($itemcontact['network'])) . "\n";
-				$body = $prefix . $body;
-			}
-		}
-		else {
-
-			if($like)
-				$signed_text = $item['guid'] . ';' . $target_type . ';' . $parent_guid . ';' . $positive . ';' . $myaddr;
-			else
-				$signed_text = $item['guid'] . ';' . $parent_guid . ';' . $text . ';' . $myaddr;
-
-			$authorsig = base64_encode(rsa_sign($signed_text,$owner['uprvkey'],'sha256'));
-
-			q("insert into sign (`iid`,`signed_text`,`signature`,`signer`) values (%d,'%s','%s','%s') ",
-				intval($item['id']),
-				dbesc($signed_text),
-				dbesc(base64_encode($authorsig)),
-				dbesc($myaddr)
-			);
-			$handle = $myaddr;
-		}
+		// Author signature information (for likes, comments, and retractions of likes or comments,
+		// whether from Diaspora or Friendica) must be placed in the `sign` table before this 
+		// function is called
+		logger('diaspora_send_relay: original author signature not found, cannot send relayable');
+		return;
 	}
 
-	// sign it
+	if($relay_retract)
+		$sender_signed_text = $item['guid'] . ';' . $target_type;
+	elseif($like)
+		$sender_signed_text = $item['guid'] . ';' . $target_type . ';' . $parent_guid . ';' . $positive . ';' . $handle;
+	else
+		$sender_signed_text = $item['guid'] . ';' . $parent_guid . ';' . $text . ';' . $handle;
 
-	$parentauthorsig = base64_encode(rsa_sign($signed_text,$owner['uprvkey'],'sha256'));
+	// Sign the relayable with the top-level owner's signature
+	//
+	// We'll use the $sender_signed_text that we just created, instead of the $signed_text
+	// stored in the database, because that provides the best chance that Diaspora will
+	// be able to reconstruct the signed text the same way we did. This is particularly a
+	// concern for the comment, whose signed text includes the text of the comment. The
+	// smallest change in the text of the comment, including removing whitespace, will
+	// make the signature verification fail. Since we translate from BB code to Diaspora's
+	// markup at the top of this function, which is AFTER we placed the original $signed_text
+	// in the database, it's hazardous to trust the original $signed_text.
+
+	$parentauthorsig = base64_encode(rsa_sign($sender_signed_text,$owner['uprvkey'],'sha256'));
 
 	$msg = replace_macros($tpl,array(
 		'$guid' => xmlify($item['guid']),
 		'$parent_guid' => xmlify($parent_guid),
 		'$target_type' =>xmlify($target_type),
-		'$authorsig' => xmlify($orig_sign['signature']),
+		'$authorsig' => xmlify($authorsig),
 		'$parentsig' => xmlify($parentauthorsig),
 		'$body' => xmlify($text),
 		'$positive' => xmlify($positive),
 		'$handle' => xmlify($handle)
 	));
 
-	logger('diaspora_relay_comment: base message: ' . $msg, LOGGER_DATA);
+	logger('diaspora_send_relay: base message: ' . $msg, LOGGER_DATA);
+
 
 	$slap = 'xml=' . urlencode(urlencode(diaspora_msg_build($msg,$owner,$contact,$owner['uprvkey'],$contact['pubkey'],$public_batch)));
+	//$slap = 'xml=' . urlencode(diaspora_msg_build($msg,$owner,$contact,$owner['uprvkey'],$contact['pubkey'],$public_batch));
 
 	return(diaspora_transmit($owner,$contact,$slap,$public_batch));
 
@@ -2220,17 +2339,29 @@ function diaspora_send_retraction($item,$owner,$contact,$public_batch = false) {
 	$a = get_app();
 	$myaddr = $owner['nickname'] . '@' .  substr($a->get_baseurl(), strpos($a->get_baseurl(),'://') + 3);
 
-	$signed_text = $item['guid'] . ';' . 'StatusMessage';
+	// Check whether the retraction is for a top-level post or whether it's a relayable
+	if( $item['uri'] !== $item['parent-uri'] ) {
 
-	$tpl = get_markup_template('diaspora_signed_retract.tpl');
+		$tpl = get_markup_template('diaspora_relay_retraction.tpl');
+		$target_type = (($item['verb'] === ACTIVITY_LIKE) ? 'Like' : 'Comment');
+	}
+	else {
+		
+		$tpl = get_markup_template('diaspora_signed_retract.tpl');
+		$target_type = 'StatusMessage';
+	}
+
+	$signed_text = $item['guid'] . ';' . $target_type;
+
 	$msg = replace_macros($tpl, array(
-		'$guid'   => $item['guid'],
-		'$type'   => 'StatusMessage',
-		'$handle' => $myaddr,
-		'$signature' => base64_encode(rsa_sign($signed_text,$owner['uprvkey'],'sha256'))
+		'$guid'   => xmlify($item['guid']),
+		'$type'   => xmlify($target_type),
+		'$handle' => xmlify($myaddr),
+		'$signature' => xmlify(base64_encode(rsa_sign($signed_text,$owner['uprvkey'],'sha256')))
 	));
 
 	$slap = 'xml=' . urlencode(urlencode(diaspora_msg_build($msg,$owner,$contact,$owner['uprvkey'],$contact['pubkey'],$public_batch)));
+	//$slap = 'xml=' . urlencode(diaspora_msg_build($msg,$owner,$contact,$owner['uprvkey'],$contact['pubkey'],$public_batch));
 
 	return(diaspora_transmit($owner,$contact,$slap,$public_batch));
 }
@@ -2291,6 +2422,7 @@ function diaspora_send_mail($item,$owner,$contact) {
 	logger('diaspora_conversation: ' . print_r($xmsg,true), LOGGER_DATA);
 
 	$slap = 'xml=' . urlencode(urlencode(diaspora_msg_build($xmsg,$owner,$contact,$owner['uprvkey'],$contact['pubkey'],false)));
+	//$slap = 'xml=' . urlencode(diaspora_msg_build($xmsg,$owner,$contact,$owner['uprvkey'],$contact['pubkey'],false));
 
 	return(diaspora_transmit($owner,$contact,$slap,false));
 
@@ -2351,3 +2483,5 @@ function diaspora_transmit($owner,$contact,$slap,$public_batch) {
 
 	return(($return_code) ? $return_code : (-1));
 }
+
+

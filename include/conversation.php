@@ -173,6 +173,12 @@ function localize_item(&$item){
 				$item['body'] = str_replace($mtch[0],'@[url=' . zrl($mtch[1]). ']',$item['body']);
 		}
 	}
+	// add zrl's to public images
+	if(preg_match_all('/\[url=(.*?)\/photos\/(.*?)\/image\/(.*?)\]\[img(.*?)\]h(.*?)\[\/img\]\[\/url\]/is',$item['body'],$matches,PREG_SET_ORDER)) {
+		foreach($matches as $mtch) {
+				$item['body'] = str_replace($mtch[0],'[url=' . zrl($mtch[1] . '/photos/' . $mtch[2] . '/image/' . $mtch[3] ,true) . '][img' . $mtch[4] . ']h' . $mtch[5]  . '[/img][/url]',$item['body']);
+		}
+	}
 
 
 }
@@ -302,7 +308,7 @@ function conversation(&$a, $items, $mode, $update, $preview = false) {
 				if(($normalised != 'mailbox') && (x($a->contacts[$normalised])))
 					$profile_avatar = $a->contacts[$normalised]['thumb'];
 				else
-					$profile_avatar = ((strlen($item['author-avatar'])) ? $item['author-avatar'] : $item['thumb']);
+					$profile_avatar = ((strlen($item['author-avatar'])) ? $a->get_cached_avatar_image($item['author-avatar']) : $item['thumb']);
 
 				$locate = array('location' => $item['location'], 'coord' => $item['coord'], 'html' => '');
 				call_hooks('render_location',$locate);
@@ -421,8 +427,8 @@ function conversation(&$a, $items, $mode, $update, $preview = false) {
 				// We've already parsed out like/dislike for special treatment. We can ignore them now
 
 				if(((activity_match($item['verb'],ACTIVITY_LIKE)) 
-					|| (activity_match($item['verb'],ACTIVITY_DISLIKE))) 
-					&& ($item['id'] != $item['parent']))
+					|| (activity_match($item['verb'],ACTIVITY_DISLIKE)))) 
+//					&& ($item['id'] != $item['parent']))
 					continue;
 
 				$toplevelpost = (($item['id'] == $item['parent']) ? true : false);
@@ -540,16 +546,16 @@ function conversation(&$a, $items, $mode, $update, $preview = false) {
 				}
 
 				$likebuttons = '';
-				$shareable = ((($profile_owner == local_user()) &&  (! $item['private'])) ? true : false); //($mode != 'display') &&
+				$shareable = ((($profile_owner == local_user()) &&  ((! $item['private']) || $item['network'] === NETWORK_FEED)) ? true : false); 
 
 				if($page_writeable) {
-					if($toplevelpost) {
+/*					if($toplevelpost) {  */
 						$likebuttons = array(
 							'like' => array( t("I like this \x28toggle\x29"), t("like")),
 							'dislike' => array( t("I don't like this \x28toggle\x29"), t("dislike")),
 						);
 						if ($shareable) $likebuttons['share'] = array( t('Share this'), t('share'));
-					}
+/*					} */
 
 					$qc = $qcomment =  null;
 
@@ -651,10 +657,10 @@ function conversation(&$a, $items, $mode, $update, $preview = false) {
 				if(($normalised != 'mailbox') && (x($a->contacts,$normalised)))
 					$profile_avatar = $a->contacts[$normalised]['thumb'];
 				else
-					$profile_avatar = (((strlen($item['author-avatar'])) && $diff_author) ? $item['author-avatar'] : $thumb);
+					$profile_avatar = (((strlen($item['author-avatar'])) && $diff_author) ? $item['author-avatar'] : $a->get_cached_avatar_image($thumb));
 
-				$like    = ((x($alike,$item['id'])) ? format_like($alike[$item['id']],$alike[$item['id'] . '-l'],'like',$item['id']) : '');
-				$dislike = ((x($dlike,$item['id'])) ? format_like($dlike[$item['id']],$dlike[$item['id'] . '-l'],'dislike',$item['id']) : '');
+				$like    = ((x($alike,$item['uri'])) ? format_like($alike[$item['uri']],$alike[$item['uri'] . '-l'],'like',$item['uri']) : '');
+				$dislike = ((x($dlike,$item['uri'])) ? format_like($dlike[$item['uri']],$dlike[$item['uri'] . '-l'],'dislike',$item['uri']) : '');
 
 				$locate = array('location' => $item['location'], 'coord' => $item['coord'], 'html' => '');
 				call_hooks('render_location',$locate);
@@ -870,13 +876,17 @@ function like_puller($a,$item,&$arr,$mode) {
 		}
 		else
 			$url = zrl($url);
-		if(! ((isset($arr[$item['parent'] . '-l'])) && (is_array($arr[$item['parent'] . '-l']))))
-			$arr[$item['parent'] . '-l'] = array();
-		if(! isset($arr[$item['parent']]))
-			$arr[$item['parent']] = 1;
+
+		if(! $item['thr-parent'])
+			$item['thr-parent'] = $item['parent-uri'];
+
+		if(! ((isset($arr[$item['thr-parent'] . '-l'])) && (is_array($arr[$item['thr-parent'] . '-l']))))
+			$arr[$item['thr-parent'] . '-l'] = array();
+		if(! isset($arr[$item['thr-parent']]))
+			$arr[$item['thr-parent']] = 1;
 		else	
-			$arr[$item['parent']] ++;
-		$arr[$item['parent'] . '-l'][] = '<a href="'. $url . '"'. $sparkle .'>' . $item['author-name'] . '</a>';
+			$arr[$item['thr-parent']] ++;
+		$arr[$item['thr-parent'] . '-l'][] = '<a href="'. $url . '"'. $sparkle .'>' . $item['author-name'] . '</a>';
 	}
 	return;
 }}

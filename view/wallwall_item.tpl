@@ -1,3 +1,4 @@
+<a name="$item.id" ></a>
 <div class="wall-item-outside-wrapper$item.indent$item.previewing wallwall" id="wall-item-outside-wrapper-$item.id" >
 	<div class="wall-item-content-wrapper$item.indent" id="wall-item-content-wrapper-$item.id" >
 		<div class="wall-item-info wallwall" id="wall-item-info-$item.id">
@@ -73,10 +74,10 @@
 		</div>
 	</div>	
 	<div class="wall-item-wrapper-end"></div>
-	<div class="wall-item-like" id="wall-item-like-$item.id">$item.like</div>
-	<div class="wall-item-dislike" id="wall-item-dislike-$item.id">$item.dislike</div>
+	<div class="wall-item-like $item.indent" id="wall-item-like-$item.id">$item.like</div>
+	<div class="wall-item-dislike $item.indent" id="wall-item-dislike-$item.id">$item.dislike</div>
 	<div class="wall-item-comment-separator"></div>
-	<div class="wall-item-comment-wrapper" >
+	<div class="wall-item-comment-wrapper">
 	$item.comment
 	</div>
 

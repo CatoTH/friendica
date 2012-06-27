@@ -65,7 +65,8 @@ function oembed_fetch_url($embedurl){
 }
 	
 function oembed_format_object($j){
-	$embedurl = $j->embedurl;
+	$a = get_app();
+    $embedurl = $j->embedurl;
 	$jhtml = oembed_iframe($j->embedurl,(isset($j->width) ? $j->width : null), (isset($j->height) ? $j->height : null) );
 	$ret="<span class='oembed ".$j->type."'>";
 	switch ($j->type) {
@@ -78,6 +79,7 @@ function oembed_format_object($j){
 				$th=120; $tw = $th*$tr;
 				$tpl=get_markup_template('oembed_video.tpl');
 				$ret.=replace_macros($tpl, array(
+                    '$baseurl' => $a->get_baseurl(),
 					'$embedurl'=>$embedurl,
 					'$escapedhtml'=>base64_encode($jhtml),
 					'$tw'=>$tw,
@@ -91,7 +93,8 @@ function oembed_format_object($j){
 			$ret.="<br>";
 		}; break;
 		case "photo": {
-			$ret.= "<img width='".$j->width."' height='".$j->height."' src='".$j->url."'>";
+			$ret.= "<img width='".$j->width."' src='".$j->url."'>";
+			//$ret.= "<img width='".$j->width."' height='".$j->height."' src='".$j->url."'>";
 			$ret.="<br>";
 		}; break;  
 		case "link": {

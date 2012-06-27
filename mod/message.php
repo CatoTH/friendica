@@ -25,6 +25,7 @@ function message_init(&$a) {
 	var a; 
 	a = $("#recip").autocomplete({ 
 		serviceUrl: '$base/acl',
+		minChars: 2,
 		width: 350,
 		onSelect: function(value,data) {
 			$("#recip-complete").val(data);
@@ -211,7 +212,8 @@ function message_content(&$a) {
 			'$parent' => '',
 			'$upload' => t('Upload photo'),
 			'$insert' => t('Insert web link'),
-			'$wait' => t('Please wait')
+			'$wait' => t('Please wait'),
+			'$submit' => t('Submit')
 		));
 
 		return $o;
@@ -405,6 +407,7 @@ function message_content(&$a) {
 			'$parent' => $parent,
 			'$upload' => t('Upload photo'),
 			'$insert' => t('Insert web link'),
+			'$submit' => t('Submit'),
 			'$wait' => t('Please wait')
 
 		));

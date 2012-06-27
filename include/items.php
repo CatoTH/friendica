@@ -22,8 +22,6 @@ function get_feed_for(&$a, $dfrn_id, $owner_nick, $last_update, $direction = 0) 
 			if($a->argv[$x] === 'category' && $a->argc > ($x + 1) && strlen($a->argv[$x+1]))
 				$category = $a->argv[$x+1];
 		}
-
-
 	}
 
 	
@@ -448,6 +446,8 @@ function get_atom_elements($feed,$item) {
 		$res['body'] = $purifier->purify($res['body']);
 
 		$res['body'] = @html2bbcode($res['body']);
+
+
 	}
 	elseif(! $have_real_body) {
 
@@ -693,6 +693,8 @@ function encode_rel_links($links) {
 	return xmlify($o);
 }
 
+
+
 function item_store($arr,$force_parent = false) {
 
 	// If a Diaspora signature structure was passed in, pull it out of the 
@@ -806,6 +808,20 @@ function item_store($arr,$force_parent = false) {
 			$deny_cid       = $r[0]['deny_cid'];
 			$deny_gid       = $r[0]['deny_gid'];
 			$arr['wall']    = $r[0]['wall'];
+
+			// if the parent is private, force privacy for the entire conversation
+			// This differs from the above settings as it subtly allows comments from 
+			// email correspondents to be private even if the overall thread is not. 
+
+			if($r[0]['private'])
+				$arr['private'] = 1;
+
+			// Edge case. We host a public forum that was originally posted to privately.
+			// The original author commented, but as this is a comment, the permissions
+			// weren't fixed up so it will still show the comment as private unless we fix it here. 
+
+			if((intval($r[0]['forum_mode']) == 1) && (! $r[0]['private']))
+				$arr['private'] = 0;
 		}
 		else {
 
@@ -899,6 +915,16 @@ function item_store($arr,$force_parent = false) {
 		intval($parent_deleted),
 		intval($current_post)
 	);
+
+        $arr['id'] = $current_post;
+        $arr['parent'] = $parent_id;
+        $arr['allow_cid'] = $allow_cid;
+        $arr['allow_gid'] = $allow_gid;
+        $arr['deny_cid'] = $deny_cid;
+        $arr['deny_gid'] = $deny_gid;
+        $arr['private'] = $private;
+        $arr['deleted'] = $parent_deleted;
+	call_hooks('post_remote_end',$arr);
 
 	// update the commented timestamp on the parent
 
@@ -1240,6 +1266,12 @@ function dfrn_deliver($owner,$contact,$atom, $dissolve = false) {
 		return 3;
 	}
 
+	if($contact['term-date'] != '0000-00-00 00:00:00') {
+		logger("dfrn_deliver: $url back from the dead - removing mark for death");
+		require_once('include/Contact.php');
+		unmark_for_death($contact);
+	}
+
 	$res = parse_xml_string($xml);
 
 	return $res->status; 
@@ -1304,6 +1336,7 @@ function consume_feed($xml,$importer,&$contact, &$hub, $datedir = 0, $pass = 0) 
 	$birthday = '';
 
 	$hubs = $feed->get_links('hub');
+	logger('consume_feed: hubs: ' . print_r($hubs,true), LOGGER_DATA);
 
 	if(count($hubs))
 		$hub = implode(',', $hubs);
@@ -1346,7 +1379,11 @@ function consume_feed($xml,$importer,&$contact, &$hub, $datedir = 0, $pass = 0) 
 		}
 			
 		$img_str = fetch_url($photo_url,true);
-		$img = new Photo($img_str);
+		// guess mimetype from headers or filename
+		$type = guess_image_type($photo_url,true);
+		
+		
+		$img = new Photo($img_str, $type);
 		if($img->is_valid()) {
 			if($have_photo) {
 				q("DELETE FROM `photo` WHERE `resource-id` = '%s' AND `contact-id` = %d AND `uid` = %d",
@@ -1372,9 +1409,9 @@ function consume_feed($xml,$importer,&$contact, &$hub, $datedir = 0, $pass = 0) 
 			q("UPDATE `contact` SET `avatar-date` = '%s', `photo` = '%s', `thumb` = '%s', `micro` = '%s'  
 				WHERE `uid` = %d AND `id` = %d LIMIT 1",
 				dbesc(datetime_convert()),
-				dbesc($a->get_baseurl() . '/photo/' . $hash . '-4.jpg'),
-				dbesc($a->get_baseurl() . '/photo/' . $hash . '-5.jpg'),
-				dbesc($a->get_baseurl() . '/photo/' . $hash . '-6.jpg'),
+				dbesc($a->get_baseurl() . '/photo/' . $hash . '-4.'.$img->getExt()),
+				dbesc($a->get_baseurl() . '/photo/' . $hash . '-5.'.$img->getExt()),
+				dbesc($a->get_baseurl() . '/photo/' . $hash . '-6.'.$img->getExt()),
 				intval($contact['uid']),
 				intval($contact['id'])
 			);
@@ -1420,11 +1457,12 @@ function consume_feed($xml,$importer,&$contact, &$hub, $datedir = 0, $pass = 0) 
 			 *
 			 */
 			 
-			$bdtext = t('Birthday:') . ' [url=' . $contact['url'] . ']' . $contact['name'] . '[/url]' ;
+			$bdtext = sprintf( t('%s\'s birthday'), $contact['name']);
+			$bdtext2 = sprintf( t('Happy Birthday %s'), ' [url=' . $contact['url'] . ']' . $contact['name'] . '[/url]' ) ;
 
 
-			$r = q("INSERT INTO `event` (`uid`,`cid`,`created`,`edited`,`start`,`finish`,`desc`,`type`,`adjust`)
-				VALUES ( %d, %d, '%s', '%s', '%s', '%s', '%s', '%s', %d ) ",
+			$r = q("INSERT INTO `event` (`uid`,`cid`,`created`,`edited`,`start`,`finish`,`summary`,`desc`,`type`)
+				VALUES ( %d, %d, '%s', '%s', '%s', '%s', '%s', '%s', '%s' ) ",
 				intval($contact['uid']),
 			 	intval($contact['id']),
 				dbesc(datetime_convert()),
@@ -1432,8 +1470,8 @@ function consume_feed($xml,$importer,&$contact, &$hub, $datedir = 0, $pass = 0) 
 				dbesc(datetime_convert('UTC','UTC', $birthday)),
 				dbesc(datetime_convert('UTC','UTC', $birthday . ' + 1 day ')),
 				dbesc($bdtext),
-				dbesc('birthday'),
-				0
+				dbesc($bdtext2),
+				dbesc('birthday')
 			);
 			
 
@@ -1631,6 +1669,11 @@ function consume_feed($xml,$importer,&$contact, &$hub, $datedir = 0, $pass = 0) 
 
 				if(count($r)) {
 					if((x($datarray,'edited') !== false) && (datetime_convert('UTC','UTC',$datarray['edited']) !== $r[0]['edited'])) {  
+
+						// do not accept (ignore) an earlier edit than one we currently have.
+						if(datetime_convert('UTC','UTC',$datarray['edited']) < $r[0]['edited'])
+							continue;
+
 						$r = q("UPDATE `item` SET `title` = '%s', `body` = '%s', `tag` = '%s', `edited` = '%s' WHERE `uri` = '%s' AND `uid` = %d LIMIT 1",
 							dbesc($datarray['title']),
 							dbesc($datarray['body']),
@@ -1685,10 +1728,12 @@ function consume_feed($xml,$importer,&$contact, &$hub, $datedir = 0, $pass = 0) 
 					$datarray['type'] = 'activity';
 					$datarray['gravity'] = GRAVITY_LIKE;
 					// only one like or dislike per person
-					$r = q("select id from item where uid = %d and `contact-id` = %d and verb ='%s' and deleted = 0 limit 1",
+					$r = q("select id from item where uid = %d and `contact-id` = %d and verb ='%s' and deleted = 0 and (`parent-uri` = '%s' OR `thr_parent` = '%s') limit 1",
 						intval($datarray['uid']),
 						intval($datarray['contact-id']),
-						dbesc($datarray['verb'])
+						dbesc($datarray['verb']),
+						dbesc($parent_uri),
+						dbesc($parent_uri)
 					);
 					if($r && count($r))
 						continue; 
@@ -1777,6 +1822,11 @@ function consume_feed($xml,$importer,&$contact, &$hub, $datedir = 0, $pass = 0) 
 
 				if(count($r)) {
 					if((x($datarray,'edited') !== false) && (datetime_convert('UTC','UTC',$datarray['edited']) !== $r[0]['edited'])) {  
+
+						// do not accept (ignore) an earlier edit than one we currently have.
+						if(datetime_convert('UTC','UTC',$datarray['edited']) < $r[0]['edited'])
+							continue;
+
 						$r = q("UPDATE `item` SET `title` = '%s', `body` = '%s', `tag` = '%s', `edited` = '%s' WHERE `uri` = '%s' AND `uid` = %d LIMIT 1",
 							dbesc($datarray['title']),
 							dbesc($datarray['body']),
@@ -1832,9 +1882,11 @@ function consume_feed($xml,$importer,&$contact, &$hub, $datedir = 0, $pass = 0) 
 				}
 
 				if(($contact['network'] === NETWORK_FEED) || (! strlen($contact['notify']))) {
-					// one way feed - no remote comment ability
-					$datarray['last-child'] = 0;
+						// one way feed - no remote comment ability
+						$datarray['last-child'] = 0;
 				}
+				if($contact['network'] === NETWORK_FEED)
+					$datarray['private'] = 1;
 
 				// This is my contact on another system, but it's really me.
 				// Turn this into a wall post.
@@ -2098,6 +2150,67 @@ function local_delivery($importer,$data) {
 			}
 			if($deleted) {
 
+				// check for relayed deletes to our conversation
+
+				$is_reply = false;		
+				$r = q("select * from item where uri = '%s' and uid = %d limit 1",
+					dbesc($uri),
+					intval($importer['importer_uid'])
+				);
+				if(count($r)) {
+					$parent_uri = $r[0]['parent-uri'];
+					if($r[0]['id'] != $r[0]['parent'])
+						$is_reply = true;
+				}				
+
+				if($is_reply) {
+					$community = false;
+
+					if($importer['page-flags'] == PAGE_COMMUNITY || $importer['page-flags'] == PAGE_PRVGROUP ) {
+						$sql_extra = '';
+						$community = true;
+						logger('local_delivery: possible community delete');
+					}
+					else
+						$sql_extra = " and contact.self = 1 and item.wall = 1 ";
+ 
+					// was the top-level post for this reply written by somebody on this site? 
+					// Specifically, the recipient? 
+
+					$is_a_remote_delete = false;
+
+					$r = q("select `item`.`id`, `item`.`uri`, `item`.`tag`, `item`.`forum_mode`,`item`.`origin`,`item`.`wall`, 
+						`contact`.`name`, `contact`.`url`, `contact`.`thumb` from `item` 
+						LEFT JOIN `contact` ON `contact`.`id` = `item`.`contact-id` 
+						WHERE `item`.`uri` = '%s' AND (`item`.`parent-uri` = '%s' or `item`.`thr-parent` = '%s')
+						AND `item`.`uid` = %d 
+						$sql_extra
+						LIMIT 1",
+						dbesc($parent_uri),
+						dbesc($parent_uri),
+						dbesc($parent_uri),
+						intval($importer['importer_uid'])
+					);
+					if($r && count($r))
+						$is_a_remote_delete = true;			
+
+					// Does this have the characteristics of a community or private group comment?
+					// If it's a reply to a wall post on a community/prvgroup page it's a 
+					// valid community comment. Also forum_mode makes it valid for sure. 
+					// If neither, it's not.
+
+					if($is_a_remote_delete && $community) {
+						if((! $r[0]['forum_mode']) && (! $r[0]['wall'])) {
+							$is_a_remote_delete = false;
+							logger('local_delivery: not a community delete');
+						}
+					}
+
+					if($is_a_remote_delete) {
+						logger('local_delivery: received remote delete');
+					}
+				}
+
 				$r = q("SELECT `item`.*, `contact`.`self` FROM `item` left join contact on `item`.`contact-id` = `contact`.`id`
 					WHERE `uri` = '%s' AND `item`.`uid` = %d AND `contact-id` = %d AND NOT `item`.`file` LIKE '%%[%%' LIMIT 1",
 					dbesc($uri),
@@ -2185,7 +2298,11 @@ function local_delivery($importer,$data) {
 								);
 							}	
 						}
-					}	
+						// if this is a relayed delete, propagate it to other recipients
+
+						if($is_a_remote_delete)
+							proc_run('php',"include/notifier.php","drop",$item['id']);
+					}
 				}
 			}
 		}
@@ -2218,13 +2335,15 @@ function local_delivery($importer,$data) {
 
 			$is_a_remote_comment = false;
 
+			// POSSIBLE CLEANUP --> Why select so many fields when only forum_mode and wall are used?
 			$r = q("select `item`.`id`, `item`.`uri`, `item`.`tag`, `item`.`forum_mode`,`item`.`origin`,`item`.`wall`, 
 				`contact`.`name`, `contact`.`url`, `contact`.`thumb` from `item` 
 				LEFT JOIN `contact` ON `contact`.`id` = `item`.`contact-id` 
-				WHERE `item`.`uri` = '%s' AND `item`.`parent-uri` = '%s'
+				WHERE `item`.`uri` = '%s' AND (`item`.`parent-uri` = '%s' or `item`.`thr-parent` = '%s')
 				AND `item`.`uid` = %d 
 				$sql_extra
 				LIMIT 1",
+				dbesc($parent_uri),
 				dbesc($parent_uri),
 				dbesc($parent_uri),
 				intval($importer['importer_uid'])
@@ -2260,7 +2379,12 @@ function local_delivery($importer,$data) {
 
 				if(count($r)) {
 					$iid = $r[0]['id'];
-					if((x($datarray,'edited') !== false) && (datetime_convert('UTC','UTC',$datarray['edited']) !== $r[0]['edited'])) {  
+					if((x($datarray,'edited') !== false) && (datetime_convert('UTC','UTC',$datarray['edited']) !== $r[0]['edited'])) {
+					
+						// do not accept (ignore) an earlier edit than one we currently have.
+						if(datetime_convert('UTC','UTC',$datarray['edited']) < $r[0]['edited'])
+							continue;
+  
 						logger('received updated comment' , LOGGER_DEBUG);
 						$r = q("UPDATE `item` SET `title` = '%s', `body` = '%s', `tag` = '%s', `edited` = '%s' WHERE `uri` = '%s' AND `uid` = %d LIMIT 1",
 							dbesc($datarray['title']),
@@ -2309,10 +2433,13 @@ function local_delivery($importer,$data) {
 					$datarray['gravity'] = GRAVITY_LIKE;
 					$datarray['last-child'] = 0;
 					// only one like or dislike per person
-					$r = q("select id from item where uid = %d and `contact-id` = %d and verb ='%s' and deleted = 0 limit 1",
+					$r = q("select id from item where uid = %d and `contact-id` = %d and verb = '%s' and (`thr-parent` = '%s' or `parent-uri` = '%s') and deleted = 0 limit 1",
 						intval($datarray['uid']),
 						intval($datarray['contact-id']),
-						dbesc($datarray['verb'])
+						dbesc($datarray['verb']),
+						dbesc($datarray['parent-uri']),
+						dbesc($datarray['parent-uri'])
+		
 					);
 					if($r && count($r))
 						continue; 
@@ -2439,6 +2566,11 @@ function local_delivery($importer,$data) {
 
 				if(count($r)) {
 					if((x($datarray,'edited') !== false) && (datetime_convert('UTC','UTC',$datarray['edited']) !== $r[0]['edited'])) {  
+
+						// do not accept (ignore) an earlier edit than one we currently have.
+						if(datetime_convert('UTC','UTC',$datarray['edited']) < $r[0]['edited'])
+							continue;
+
 						$r = q("UPDATE `item` SET `title` = '%s', `body` = '%s', `tag` = '%s', `edited` = '%s' WHERE `uri` = '%s' AND `uid` = %d LIMIT 1",
 							dbesc($datarray['title']),
 							dbesc($datarray['body']),
@@ -2475,10 +2607,12 @@ function local_delivery($importer,$data) {
 					$datarray['type'] = 'activity';
 					$datarray['gravity'] = GRAVITY_LIKE;
 					// only one like or dislike per person
-					$r = q("select id from item where uid = %d and `contact-id` = %d and verb ='%s' and deleted = 0 limit 1",
+					$r = q("select id from item where uid = %d and `contact-id` = %d and verb ='%s' and deleted = 0 and (`parent-uri` = '%s' OR `thr-parent` = '%s') limit 1",
 						intval($datarray['uid']),
 						intval($datarray['contact-id']),
-						dbesc($datarray['verb'])
+						dbesc($datarray['verb']),
+						dbesc($parent_uri),
+						dbesc($parent_uri)
 					);
 					if($r && count($r))
 						continue; 
@@ -2605,6 +2739,11 @@ function local_delivery($importer,$data) {
 
 			if(count($r)) {
 				if((x($datarray,'edited') !== false) && (datetime_convert('UTC','UTC',$datarray['edited']) !== $r[0]['edited'])) {  
+
+					// do not accept (ignore) an earlier edit than one we currently have.
+					if(datetime_convert('UTC','UTC',$datarray['edited']) < $r[0]['edited'])
+						continue;
+
 					$r = q("UPDATE `item` SET `title` = '%s', `body` = '%s', `tag` = '%s', `edited` = '%s' WHERE `uri` = '%s' AND `uid` = %d LIMIT 1",
 						dbesc($datarray['title']),
 						dbesc($datarray['body']),
@@ -2778,6 +2917,8 @@ function lose_sharer($importer,$contact,$datarray,$item) {
 
 function subscribe_to_hub($url,$importer,$contact,$hubmode = 'subscribe') {
 
+	$a = get_app();
+
 	if(is_array($importer)) {
 		$r = q("SELECT `nickname` FROM `user` WHERE `uid` = %d LIMIT 1",
 			intval($importer['uid'])
@@ -2808,7 +2949,10 @@ function subscribe_to_hub($url,$importer,$contact,$hubmode = 'subscribe') {
 		);
 	}
 
-	post_url($url,$params);			
+	post_url($url,$params);
+
+	logger('subscribe_to_hub: returns: ' . $a->get_curl_code(), LOGGER_DEBUG);
+			
 	return;
 
 }
@@ -2863,8 +3007,10 @@ function atom_entry($item,$type,$author,$owner,$comment = false,$cid = 0) {
 	if(strlen($item['owner-name']))
 		$o .= atom_author('dfrn:owner',$item['owner-name'],$item['owner-link'],80,80,$item['owner-avatar']);
 
-	if(($item['parent'] != $item['id']) || ($item['parent-uri'] !== $item['uri']))
-		$o .= '<thr:in-reply-to ref="' . xmlify($item['parent-uri']) . '" type="text/html" href="' .  xmlify($a->get_baseurl() . '/display/' . $owner['nickname'] . '/' . $item['parent']) . '" />' . "\r\n";
+	if(($item['parent'] != $item['id']) || ($item['parent-uri'] !== $item['uri']) || ($item['thr-parent'])) {
+		$parent_item = (($item['thr-parent']) ? $item['thr-parent'] : $item['parent-uri']);
+		$o .= '<thr:in-reply-to ref="' . xmlify($parent_item) . '" type="text/html" href="' .  xmlify($a->get_baseurl() . '/display/' . $owner['nickname'] . '/' . $item['parent']) . '" />' . "\r\n";
+	}
 
 	$o .= '<id>' . xmlify($item['uri']) . '</id>' . "\r\n";
 	$o .= '<title>' . xmlify($item['title']) . '</title>' . "\r\n";
@@ -2944,7 +3090,7 @@ function fix_private_photos($s,$uid, $item = null, $cid = 0) {
 		if(stristr($image , $site . '/photo/')) {
 			$replace = false;
 			$i = basename($image);
-			$i = str_replace('.jpg','',$i);
+			$i = str_replace(array('.jpg','.png'),array('',''),$i);
 			$x = strpos($i,'-');
 			if($x) {
 				$res = substr($i,$x+1);
@@ -2986,7 +3132,7 @@ function fix_private_photos($s,$uid, $item = null, $cid = 0) {
 					}
 					if($replace) {
 						logger('fix_private_photos: replacing photo', LOGGER_DEBUG);
-						$s = str_replace($image, 'data:image/jpg;base64,' . base64_encode($r[0]['data']), $s);
+						$s = str_replace($image, 'data:' . $r[0]['type'] . ';base64,' . base64_encode($r[0]['data']), $s);
 						logger('fix_private_photos: replaced: ' . $s, LOGGER_DATA);
 					}
 				}
@@ -3279,7 +3425,10 @@ function drop_item($id,$interactive = true) {
 				q("UPDATE `item` SET `last-child` = 1 WHERE `id` = %d LIMIT 1",
 					intval($r[0]['id'])
 				);
-			}	
+			}
+
+			// Add a relayable_retraction signature for Diaspora.
+			store_diaspora_retract_sig($item, $a->user, $a->get_baseurl());
 		}
 		$drop_id = intval($item['id']);
 
@@ -3300,4 +3449,119 @@ function drop_item($id,$interactive = true) {
 		//NOTREACHED
 	}
 	
+}
+
+
+function first_post_date($uid,$wall = false) {
+	$r = q("select id, created from item 
+		where uid = %d and wall = %d and deleted = 0 and visible = 1 AND moderated = 0 
+		and id = parent
+		order by created asc limit 1",
+		intval($uid),
+		intval($wall ? 1 : 0)
+	);
+	if(count($r)) {
+//		logger('first_post_date: ' . $r[0]['id'] . ' ' . $r[0]['created'], LOGGER_DATA);
+		return substr(datetime_convert('',date_default_timezone_get(),$r[0]['created']),0,10);
+	}
+	return false;
+}
+
+function posted_dates($uid,$wall) {
+	$dnow = datetime_convert('',date_default_timezone_get(),'now','Y-m-d');
+
+	$dthen = first_post_date($uid,$wall);
+	if(! $dthen)
+		return array();
+
+	// If it's near the end of a long month, backup to the 28th so that in 
+	// consecutive loops we'll always get a whole month difference.
+
+	if(intval(substr($dnow,8)) > 28)
+		$dnow = substr($dnow,0,8) . '28';
+	if(intval(substr($dthen,8)) > 28)
+		$dnow = substr($dthen,0,8) . '28';
+
+	$ret = array();
+	while($dnow >= $dthen) {
+		$dstart = substr($dnow,0,8) . '01';
+		$dend = substr($dnow,0,8) . get_dim(intval($dnow),intval(substr($dnow,5)));
+		$start_month = datetime_convert('','',$dstart,'Y-m-d');
+		$end_month = datetime_convert('','',$dend,'Y-m-d');
+		$str = day_translate(datetime_convert('','',$dnow,'F Y'));
+ 		$ret[] = array($str,$end_month,$start_month);
+		$dnow = datetime_convert('','',$dnow . ' -1 month', 'Y-m-d');
+	}
+	return $ret;
+}
+
+
+function posted_date_widget($url,$uid,$wall) {
+	$o = '';
+
+	// For former Facebook folks that left because of "timeline"
+
+	if($wall && intval(get_pconfig($uid,'system','no_wall_archive_widget')))
+		return $o;
+
+	$ret = posted_dates($uid,$wall);
+	if(! count($ret))
+		return $o;
+
+	$o = replace_macros(get_markup_template('posted_date_widget.tpl'),array(
+		'$title' => t('Archives'),
+		'$size' => ((count($ret) > 6) ? 6 : count($ret)),
+		'$url' => $url,
+		'$dates' => $ret
+	));
+	return $o;
+}
+
+
+function store_diaspora_retract_sig($item, $user, $baseurl) {
+	// Note that we can't add a target_author_signature
+	// if the comment was deleted by a remote user. That should be ok, because if a remote user is deleting
+	// the comment, that means we're the home of the post, and Diaspora will only
+	// check the parent_author_signature of retractions that it doesn't have to relay further
+	//
+	// I don't think this function gets called for an "unlike," but I'll check anyway
+
+	$enabled = intval(get_config('system','diaspora_enabled'));
+	if(! $enabled) {
+		logger('drop_item: diaspora support disabled, not storing retraction signature', LOGGER_DEBUG);
+		return;
+	}
+
+	logger('drop_item: storing diaspora retraction signature');
+
+	$signed_text = $item['guid'] . ';' . ( ($item['verb'] === ACTIVITY_LIKE) ? 'Like' : 'Comment');
+
+	if(local_user() == $item['uid']) {
+
+		$handle = $user['nickname'] . '@' . substr($baseurl, strpos($baseurl,'://') + 3);
+		$authorsig = base64_encode(rsa_sign($signed_text,$user['prvkey'],'sha256'));
+	}
+	else {
+		$r = q("SELECT `nick`, `url` FROM `contact` WHERE `id` = '%d' LIMIT 1",
+			$item['contact-id']
+		);
+		if(count($r)) {
+			// The below handle only works for NETWORK_DFRN. I think that's ok, because this function
+			// only handles DFRN deletes
+			$handle_baseurl_start = strpos($r['url'],'://') + 3;
+			$handle_baseurl_length = strpos($r['url'],'/profile') - $handle_baseurl_start;
+			$handle = $r['nick'] . '@' . substr($r['url'], $handle_baseurl_start, $handle_baseurl_length);
+			$authorsig = '';
+		}
+	}
+
+	if(isset($handle))
+		q("insert into sign (`retract_iid`,`signed_text`,`signature`,`signer`) values (%d,'%s','%s','%s') ",
+			intval($item['id']),
+			dbesc($signed_text),
+			dbesc($authorsig),
+			dbesc($handle)
+		);
+
+	return;
 }

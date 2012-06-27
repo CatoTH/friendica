@@ -29,7 +29,7 @@
 {{ if $profile.marital }}
 <dl id="aprofile-marital" class="aprofile">
  <dt><span class="heart">&hearts;</span>  $profile.marital.0</dt>
- <dd>$profile.marital.1  {{ if $profile.marital.with }}($profile.marital.with){{ endif }}</dd>
+ <dd>$profile.marital.1{{ if $profile.marital.with }} ($profile.marital.with){{ endif }}{{ if $profile.howlong }} $profile.howlong{{ endif }}</dd>
 </dl>
 {{ endif }}
 
@@ -51,6 +51,13 @@
 <dl id="aprofile-homepage" class="aprofile">
  <dt>$profile.homepage.0</dt>
  <dd>$profile.homepage.1</dd>
+</dl>
+{{ endif }}
+
+{{ if $profile.hometown }}
+<dl id="aprofile-hometown" class="aprofile">
+ <dt>$profile.hometown.0</dt>
+ <dd>$profile.hometown.1</dd>
 </dl>
 {{ endif }}
 
@@ -82,6 +89,19 @@
 </dl>
 {{ endif }}
 
+{{ if $profile.likes }}
+<dl id="aprofile-likes" class="aprofile">
+ <dt>$profile.likes.0</dt>
+ <dd>$profile.likes.1</dd>
+</dl>
+{{ endif }}
+
+{{ if $profile.dislikes }}
+<dl id="aprofile-dislikes" class="aprofile">
+ <dt>$profile.dislikes.0</dt>
+ <dd>$profile.dislikes.1</dd>
+</dl>
+{{ endif }}
 
 {{ if $profile.contact }}
 <dl id="aprofile-contact" class="aprofile">

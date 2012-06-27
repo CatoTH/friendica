@@ -1,6 +1,6 @@
 <?php
 
-define( 'UPDATE_VERSION' , 1145 );
+define( 'UPDATE_VERSION' , 1151 );
 
 /**
  *
@@ -1259,3 +1259,51 @@ function update_1144() {
 		return UPDATE_FAILED ;
 	return UPDATE_SUCCESS ;
 }
+
+function update_1145() {
+	$r = q("alter table profile add howlong datetime not null default '0000-00-00 00:00:00' after `with`");
+	if(! $r)
+		return UPDATE_FAILED ;
+	return UPDATE_SUCCESS ;
+}
+
+function update_1146() {
+	$r = q("alter table profile add hometown char(255) not null after `country-name`, add index ( `hometown` ) ");
+	if(! $r)
+		return UPDATE_FAILED ;
+	return UPDATE_SUCCESS ;
+}
+
+function update_1147() {
+	$r1 = q("ALTER TABLE `sign` ALTER `iid` SET DEFAULT '0'");
+	$r2 = q("ALTER TABLE `sign` ADD `retract_iid` INT(10) UNSIGNED NOT NULL DEFAULT '0' AFTER `iid`");
+	$r3 = q("ALTER TABLE `sign` ADD INDEX ( `retract_iid` )");  
+	if((! $r1) || (! $r2) || (! $r3))
+		return UPDATE_FAILED ;
+	return UPDATE_SUCCESS ;
+}
+
+function update_1148() {
+	$r = q("ALTER TABLE photo ADD type CHAR(128) NOT NULL DEFAULT 'image/jpeg' AFTER filename");
+	if (!$r)
+		return UPDATE_FAILED;
+	return UPDATE_SUCCESS;
+}
+
+
+function update_1149() {
+	$r1 = q("ALTER TABLE profile ADD likes text NOT NULL after prv_keywords");
+	$r2 = q("ALTER TABLE profile ADD dislikes text NOT NULL after likes");
+	if (! ($r1 && $r2))
+		return UPDATE_FAILED;
+	return UPDATE_SUCCESS;
+}
+
+
+function update_1150() {
+	$r = q("ALTER TABLE event ADD summary text NOT NULL after finish, add index ( uid ), add index ( cid ), add index ( uri ), add index ( `start` ), add index ( finish ), add index ( `type` ), add index ( adjust ) ");
+	if(! $r)
+		return UPDATE_FAILED;
+	return UPDATE_SUCCESS;
+}
+
